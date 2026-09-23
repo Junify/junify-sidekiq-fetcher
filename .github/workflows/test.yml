@@ -1,0 +1,14 @@
+name: Reliability contracts
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4.10'
+          bundler-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: bundle exec parallel_rspec -n 4 --serialize-stdout spec
+      - run: gem build junify-sidekiq-fetcher.gemspec

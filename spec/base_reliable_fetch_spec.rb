@@ -47,6 +47,9 @@ describe Sidekiq::BaseReliableFetch do
     it 'requeues the bulk' do
       uow = described_class::UnitOfWork
       jobs = [ uow.new('queue:foo', job), uow.new('queue:foo', job), uow.new('queue:bar', job) ]
+      jobs.each do |unit|
+        Sidekiq.redis { |conn| conn.lpush(described_class.working_queue_name(unit.queue), unit.job) }
+      end
       described_class.new(options).bulk_requeue(jobs, nil)
 
       expect(queue1.size).to eq 2
@@ -57,6 +60,9 @@ describe Sidekiq::BaseReliableFetch do
       uow = described_class::UnitOfWork
       interrupted_job = Sidekiq.dump_json(class: 'Bob', args: [1, 2, 'foo'], interrupted_count: 3)
       jobs = [ uow.new('queue:foo', interrupted_job), uow.new('queue:foo', job), uow.new('queue:bar', job) ]
+      jobs.each do |unit|
+        Sidekiq.redis { |conn| conn.lpush(described_class.working_queue_name(unit.queue), unit.job) }
+      end
       described_class.new(options).bulk_requeue(jobs, nil)
 
       expect(queue1.size).to eq 1
@@ -70,6 +76,9 @@ describe Sidekiq::BaseReliableFetch do
       uow = described_class::UnitOfWork
       interrupted_job = Sidekiq.dump_json(class: 'Bob', args: [1, 2, 'foo'], interrupted_count: 3)
       jobs = [ uow.new('queue:foo', interrupted_job), uow.new('queue:foo', job), uow.new('queue:bar', job) ]
+      jobs.each do |unit|
+        Sidekiq.redis { |conn| conn.lpush(described_class.working_queue_name(unit.queue), unit.job) }
+      end
       described_class.new(options).bulk_requeue(jobs, nil)
 
       expect(queue1.size).to eq 2
