@@ -1,3 +1,5 @@
 *.gem
 coverage
 .DS_Store
+
+.bundle/

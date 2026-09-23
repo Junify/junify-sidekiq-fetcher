@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative '../../lib/sidekiq-reliable-fetch'
+require_relative '../../lib/junify-sidekiq-fetcher'
 require_relative 'worker'
 
 TEST_CLEANUP_INTERVAL = 20

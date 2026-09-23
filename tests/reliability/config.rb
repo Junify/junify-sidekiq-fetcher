@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative '../../lib/sidekiq-reliable-fetch'
+require_relative '../../lib/junify-sidekiq-fetcher'
 require_relative 'worker'
 
 REDIS_FINISHED_LIST = 'reliable-fetcher-finished-jids'

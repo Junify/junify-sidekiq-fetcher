@@ -1,46 +1,40 @@
 PATH
   remote: .
   specs:
-    gitlab-sidekiq-fetcher (0.8.0)
+    junify-sidekiq-fetcher (0.9.1.junify.1)
+      base64 (>= 0.1, < 1)
       json (>= 2.5)
-      sidekiq (~> 6.1)
+      sidekiq (~> 6.5.12)
 
 GEM
   remote: https://rubygems.org/
   specs:
-    coderay (1.1.2)
-    connection_pool (2.3.0)
-    diff-lcs (1.3)
-    docile (1.3.1)
-    json (2.5.1)
-    method_source (0.9.0)
-    pry (0.11.3)
-      coderay (~> 1.1.0)
-      method_source (~> 0.9.0)
-    rack (2.2.4)
-    redis (4.8.0)
-    rspec (3.8.0)
-      rspec-core (~> 3.8.0)
-      rspec-expectations (~> 3.8.0)
-      rspec-mocks (~> 3.8.0)
-    rspec-core (3.8.0)
-      rspec-support (~> 3.8.0)
-    rspec-expectations (3.8.1)
+    base64 (0.3.0)
+    connection_pool (2.5.5)
+    diff-lcs (1.6.2)
+    json (3.0.2)
+    parallel (2.2.0)
+    parallel_tests (4.10.1)
+      parallel
+    rack (2.2.24)
+    redis (4.8.1)
+    rspec (3.13.2)
+      rspec-core (~> 3.13.0)
+      rspec-expectations (~> 3.13.0)
+      rspec-mocks (~> 3.13.0)
+    rspec-core (3.13.6)
+      rspec-support (~> 3.13.0)
+    rspec-expectations (3.13.5)
       diff-lcs (>= 1.2.0, < 2.0)
-      rspec-support (~> 3.8.0)
-    rspec-mocks (3.8.0)
+      rspec-support (~> 3.13.0)
+    rspec-mocks (3.13.8)
       diff-lcs (>= 1.2.0, < 2.0)
-      rspec-support (~> 3.8.0)
-    rspec-support (3.8.0)
-    sidekiq (6.5.7)
-      connection_pool (>= 2.2.5)
+      rspec-support (~> 3.13.0)
+    rspec-support (3.13.7)
+    sidekiq (6.5.12)
+      connection_pool (>= 2.2.5, < 3)
       rack (~> 2.0)
       redis (>= 4.5.0, < 5)
-    simplecov (0.16.1)
-      docile (~> 1.1)
-      json (>= 1.8, < 3)
-      simplecov-html (~> 0.10.0)
-    simplecov-html (0.10.2)
     stub_env (1.0.4)
       rspec (>= 2.0, < 4.0)
 
@@ -48,11 +42,10 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
-  gitlab-sidekiq-fetcher!
-  pry
-  rspec (~> 3)
-  simplecov
+  junify-sidekiq-fetcher!
+  parallel_tests (~> 4.0)
+  rspec (~> 3.13)
   stub_env (~> 1.0)
 
 BUNDLED WITH
-   2.3.24
+   2.4.22

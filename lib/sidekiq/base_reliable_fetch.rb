@@ -1,6 +1,8 @@
 # frozen_string_literal: true
+# Junify modifications, 2026-09-23. LGPL-3.0; see LICENSE and COPYING.
 
 require_relative 'interrupted_set'
+require_relative 'reliable_transfer'
 
 module Sidekiq
   class BaseReliableFetch
@@ -36,10 +38,10 @@ module Sidekiq
 
       def requeue
         Sidekiq.redis do |conn|
-          conn.multi do |multi|
-            multi.lpush(queue, job)
-            multi.lrem(Sidekiq::BaseReliableFetch.working_queue_name(queue), 1, job)
-          end
+          ReliableTransfer.call(conn,
+            source: Sidekiq::BaseReliableFetch.working_queue_name(queue), destination: queue,
+            original: job, replacement: job, source_kind: 'working', destination_kind: 'list',
+            queue: queue.delete_prefix('queue:'))
         end
       end
     end
@@ -55,7 +57,7 @@ module Sidekiq
 
       config[:fetch] = fetch_strategy.new(config)
 
-      Sidekiq.logger.info('GitLab reliable fetch activated!')
+      Sidekiq.logger.info('Junify reliable fetch activated!')
 
       # Set the heartbeat immediately to prevent a race condition where
       # worker_dead? returns true in another thread. `start_heartbeat_thread`
@@ -121,7 +123,6 @@ module Sidekiq
       raise ArgumentError, 'missing queue list' unless options[:queues]
 
       @config = options
-      @interrupted_set = Sidekiq::InterruptedSet.new
       @cleanup_interval = options.fetch(:cleanup_interval, DEFAULT_CLEANUP_INTERVAL)
       @lease_interval = options.fetch(:lease_interval, DEFAULT_LEASE_INTERVAL)
       @last_try_to_take_lease_at = 0
@@ -143,14 +144,9 @@ module Sidekiq
     def bulk_requeue(inprogress, _options)
       return if inprogress.empty?
 
-      Sidekiq.redis do |conn|
-        inprogress.each do |unit_of_work|
-          conn.multi do |multi|
-            preprocess_interrupted_job(unit_of_work.job, unit_of_work.queue, multi)
-
-            multi.lrem(self.class.working_queue_name(unit_of_work.queue), 1, unit_of_work.job)
-          end
-        end
+      inprogress.each do |unit_of_work|
+        transfer_interrupted_job(unit_of_work.job, unit_of_work.queue,
+          self.class.working_queue_name(unit_of_work.queue))
       end
     rescue => e
       Sidekiq.logger.warn("Failed to requeue #{inprogress.size} jobs: #{e.message}")
@@ -158,29 +154,39 @@ module Sidekiq
 
     private
 
-    def preprocess_interrupted_job(job, queue, conn = nil)
+    # Junify modification, 2026-09-23: retain the source until the destination
+    # write succeeds, including if the reaper itself dies or loses its reply.
+    def transfer_interrupted_job(job, queue, source, heartbeat: nil)
       msg = Sidekiq.load_json(job)
       msg['interrupted_count'] = msg['interrupted_count'].to_i + 1
-
-      if interruption_exhausted?(msg)
-        send_to_quarantine(msg, conn)
-      else
-        requeue_job(queue, msg, conn)
+      exhausted = interruption_exhausted?(msg)
+      dead = exhausted && @config[:interrupted_set] == 'dead'
+      destination = exhausted ? (dead ? 'dead' : 'interrupted') : queue
+      now = Time.now.to_f
+      if dead
+        msg['error_class'] = 'Sidekiq::Interrupted'
+        msg['error_message'] = 'Worker interrupted; inspect partial effects before replay'
+        msg['failed_at'] = now
+        msg['retry_count'] ||= 0
       end
-    end
-
-    # If you want this method to be run in a scope of multi connection
-    # you need to pass it
-    def requeue_job(queue, msg, conn)
-      with_connection(conn) do |conn|
-        conn.lpush(queue, Sidekiq.dump_json(msg))
+      moved = Sidekiq.redis do |conn|
+        ReliableTransfer.call(conn, source: source, destination: destination,
+          original: job, replacement: Sidekiq.dump_json(msg),
+          source_kind: 'working', destination_kind: exhausted ? 'zset' : 'list',
+          score: now, heartbeat: heartbeat, queue: queue.delete_prefix('queue:'))
       end
-
-      Sidekiq.logger.info(
-        message: "Pushed job #{msg['jid']} back to queue #{queue}",
-        jid: msg['jid'],
-        queue: queue
-      )
+      if moved == 1 && exhausted
+        # Retention is deliberately separate from transfer: its failure cannot
+        # remove the only copy. Match the destination's existing retention.
+        max_jobs = dead ? Sidekiq::DeadSet.max_jobs : Sidekiq::InterruptedSet.max_jobs
+        timeout = dead ? Sidekiq::DeadSet.timeout : Sidekiq::InterruptedSet.timeout
+        Sidekiq.redis do |conn|
+          conn.zremrangebyscore(destination, '-inf', now - timeout)
+          conn.zremrangebyrank(destination, 0, -max_jobs - 1)
+        end
+        Sidekiq.logger.warn("Reliable fetch saved interrupted job #{msg['jid']} in #{destination}")
+      end
+      moved
     end
 
     def extract_queue_and_identity(key)
@@ -207,54 +213,50 @@ module Sidekiq
 
           next if original_queue.nil? || identity.nil?
 
-          clean_working_queue!(original_queue, key) if self.class.worker_dead?(identity, conn)
+          clean_working_queue!(original_queue, key, heartbeat: self.class.heartbeat_key(identity)) if self.class.worker_dead?(identity, conn)
         end
       end
     end
 
-    def clean_working_queue!(original_queue, working_queue)
-      Sidekiq.redis do |conn|
-        while job = conn.rpop(working_queue)
-          preprocess_interrupted_job(job, original_queue)
+    def clean_working_queue!(original_queue, working_queue, heartbeat: nil)
+      offset = 0
+      loop do
+        jobs = Sidekiq.redis { |conn| conn.lrange(working_queue, offset, offset + 99) }
+        retained = 0
+        jobs.each do |job|
+          begin
+            retained += 1 if transfer_interrupted_job(job, original_queue, working_queue, heartbeat: heartbeat) == 0
+          rescue StandardError => error
+            retained += 1
+            Sidekiq.logger.error("Reliable fetch retained working queue #{working_queue}: #{error.class}")
+          end
         end
+        break if jobs.length < 100
+        offset += retained
       end
     end
 
     def interruption_exhausted?(msg)
-      return false if max_retries_after_interruption(msg['class']) < 0
-
-      msg['interrupted_count'].to_i >= max_retries_after_interruption(msg['class'])
+      maximum = if @config[:interruption_retry_limit]
+                  @config[:interruption_retry_limit].call(msg)
+                else
+                  max_retries_after_interruption(msg['class'])
+                end
+      raise ArgumentError, 'interruption retry limit must be an Integer' unless maximum.is_a?(Integer)
+      maximum >= 0 && msg['interrupted_count'] >= maximum
     end
 
     def max_retries_after_interruption(worker_class)
       max_retries_after_interruption = nil
 
       max_retries_after_interruption ||= begin
-        Object.const_get(worker_class).sidekiq_options[:max_retries_after_interruption]
+        Object.const_get(worker_class).get_sidekiq_options['max_retries_after_interruption']
       rescue NameError
       end
 
       max_retries_after_interruption ||= @config[:max_retries_after_interruption]
       max_retries_after_interruption ||= DEFAULT_MAX_RETRIES_AFTER_INTERRUPTION
       max_retries_after_interruption
-    end
-
-    def send_to_quarantine(msg, multi_connection = nil)
-      Sidekiq.logger.warn(
-        class: msg['class'],
-        jid: msg['jid'],
-        message: %(Reliable Fetcher: adding dead #{msg['class']} job #{msg['jid']} to interrupted queue)
-      )
-
-      job = Sidekiq.dump_json(msg)
-      @interrupted_set.put(job, connection: multi_connection)
-    end
-
-    # Yield block with an existing connection or creates another one
-    def with_connection(conn)
-      return yield(conn) if conn
-
-      Sidekiq.redis { |redis_conn| yield(redis_conn) }
     end
 
     def take_lease

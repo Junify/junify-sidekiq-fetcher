@@ -1,3 +1,74 @@
+# junify-sidekiq-fetcher
+
+Junify-maintained fork of GitLab's Sidekiq fetcher. LGPL-3.0, including all
+Junify modifications. Original authors: TEA and GitLab. See LICENSE and COPYING.
+The full upstream history is preserved; the fork base is recorded in
+[JUNIFY.md](JUNIFY.md), along with the behavioral contract and evidence matrix.
+
+This release targets Sidekiq 6.5.12, Ruby 3.4 and Redis 6.0.6 or later. Newer Sidekiq major versions
+require separate compatibility work. The Gem is consumed by pinned Git commit;
+Junify has not published this fork to RubyGems.
+
+```ruby
+gem 'junify-sidekiq-fetcher', git: 'https://github.com/Junify/junify-sidekiq-fetcher.git', ref: '<reviewed commit>'
+```
+
+```ruby
+Sidekiq.configure_server do |config|
+  config[:semi_reliable_fetch] = false
+  config[:max_retries_after_interruption] = 0 # save for manual inspection
+  config[:interrupted_set] = 'dead'          # native Sidekiq dashboard/API
+  config[:cleanup_interval] = 60
+  config[:lease_interval] = 30
+  Sidekiq::ReliableFetch.setup_reliable_fetch!(config)
+  config[:scheduled_enq] = Sidekiq::ReliableScheduler
+end
+```
+
+Configure Redis before calling setup. Every worker must load this initializer.
+Crash replay is distinct from exception retry. Native job options
+`max_retries_after_interruption` or the config `interruption_retry_limit` callback
+can opt into a reviewed replay policy; 0 saves immediately, 2 permits one replay,
+-1 is unlimited. Do not infer crash safety from `retry: true`. Applications using
+Active Job must resolve their wrapped job policy explicitly before opting in.
+
+Recovery uses compare-and-transfer Redis scripts, and moves to Dead or the
+ready queue without deleting the only copy. It reads abandoned queues in batches of 100, skipping malformed entries while
+recovering valid siblings. Working lists normally contain at most one item per
+worker thread; membership checks and removal are O(worker concurrency), without
+copying the entire list into Lua. Oversized legacy lists still require O(list size)
+per transfer. Recovery latency depends on heartbeat expiry,
+cleanup cadence and queue backlog. Heartbeat expiry cannot distinguish a dead
+worker from a paused or partitioned live worker; duplicate effects are possible.
+
+The scheduler retains Sidekiq client normalization, but **requires an empty
+client middleware chain in the worker process** (Junify's current configuration).
+Registered middleware raises `UnsupportedClientMiddleware` before invoking it or
+removing any entry. Stock Sidekiq removes a scheduled item before middleware;
+invoking middleware concurrently while retaining the item can lose work through
+uniqueness-lock cancellation. Supporting such middleware requires a separate
+ownership design. Do not add client middleware without revisiting this contract.
+
+Due schedule/retry entries move atomically using Ruby JSON serialization, keeping
+large integer arguments exact. Malformed payloads and pre-write errors remain
+at source for inspection without blocking later valid entries or the other set.
+
+This requires a single Redis instance/database, not Redis Cluster. Persistence,
+failover and no-eviction are deployment responsibilities. Dead retention is
+bounded, not permanent archival. Database commit plus enqueue is not made atomic.
+On rollback, retain a recovery-enabled worker until private `working:queue:*`
+queues are drained; do not just remove the Gem or delete those queues.
+
+## Tests
+
+`bundle exec parallel_rspec -n 4 --serialize-stdout spec`
+
+Tests start disposable local Redis processes and ignore the caller's REDIS_URL.
+Install `redis-server` first. Real worker interruption tests and source-preservation
+fault probes are included; no test touches production queues.
+
+## Upstream documentation (historical)
+
 gitlab-sidekiq-fetcher
 ======================
 
